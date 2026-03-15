@@ -1,0 +1,129 @@
+#Image Enhancement Pipeline
+
+import os
+import cv2
+import torch
+import numpy as np
+from tqdm import tqdm
+import importlib.util
+
+# Device Check
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using device:", DEVICE)
+
+#Paths
+IMG_DIR = r"C:\Users\input"
+OUT_DIR = r"C:\Users\output"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+IMG_EXTS = (".jpg", ".jpeg", ".png")
+
+#Checkpoint failsafe
+CHECKPOINT_FILE = os.path.join(OUT_DIR, "checkpoint.txt")
+processed = set()
+
+if os.path.exists(CHECKPOINT_FILE):
+    with open(CHECKPOINT_FILE, "r") as f:
+        processed = set(l.strip() for l in f if l.strip())
+
+print(f"✔ Resuming — {len(processed)} images already processed")
+
+#Load ZERO-DCE++
+ZERO_DCE_MODEL = r"C:\Users\Zero-DCE_extension-main\Zero-DCE++\model.py"
+ZERO_DCE_WEIGHTS = r"C:\Users\Zero-DCE_extension-main\Zero-DCE++\snapshots_Zero_DCE++\Epoch99.pth"
+
+spec = importlib.util.spec_from_file_location("zero_dce", ZERO_DCE_MODEL)
+z = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(z)
+
+zerodce = z.enhance_net_nopool(scale_factor=1).to(DEVICE).half()
+zerodce.load_state_dict(
+    torch.load(ZERO_DCE_WEIGHTS, map_location=DEVICE, weights_only=True)
+)
+zerodce.eval()
+print("✔ Zero-DCE++ loaded")
+
+def zerodce_y_only(bgr, gain=1.05, y_cap=85):
+    ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(ycrcb)
+
+    Yf = Y.astype(np.float32) / 255.0
+    Y3 = np.stack([Yf, Yf, Yf], axis=2)
+
+    t = torch.from_numpy(Y3).permute(2,0,1).unsqueeze(0).to(DEVICE).half()
+    with torch.no_grad():
+        out, _ = zerodce(t)
+
+    Y_out = out[0,0].cpu().numpy()
+
+    # ISP-style tone curve
+    Y_out = Y_out * gain
+    Y_out = Y_out / (1.0 + Y_out)
+
+    Y_out = np.clip(Y_out * 255, 4, y_cap).astype(np.uint8)
+
+    return cv2.cvtColor(
+        cv2.merge([Y_out, Cr, Cb]),
+        cv2.COLOR_YCrCb2BGR
+    )
+
+def poisson_denoise(bgr):
+    ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(ycrcb)
+    Y = Y.astype(np.float32)
+    Y_ans = 2.0 * np.sqrt(Y + 3.0 / 8.0)
+    Y_ans = cv2.GaussianBlur(Y_ans, (3, 3), 0.6)
+    Y_rec = (Y_ans / 2.0) ** 2 - 3.0 / 8.0
+    Y_rec = np.clip(Y_rec, 0, 255).astype(np.uint8)
+
+    return cv2.cvtColor(
+        cv2.merge([Y_rec, Cr, Cb]),
+        cv2.COLOR_YCrCb2BGR
+    )
+
+def edge_anchor(bgr):
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    blur_metric = cv2.Laplacian(gray, cv2.CV_32F).var()
+    strength = np.clip((120 - blur_metric) / 100.0, 0.0, 1.5)
+    if strength < 0.15:
+        return bgr
+        
+    g1 = cv2.GaussianBlur(gray, (3,3), 0.6)
+    g2 = cv2.GaussianBlur(gray, (9,9), 2.0)
+    dog = g1 - g2
+
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = cv2.magnitude(gx, gy)
+
+    mask = mag / (mag.mean() + 1e-6)
+    mask = np.clip(mask, 0.0, 2.0)
+
+    dog = cv2.merge([dog, dog, dog])
+    mask = cv2.merge([mask, mask, mask])
+
+    out = bgr.astype(np.float32) + strength * dog * mask
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+#Inference
+with torch.no_grad(), open(CHECKPOINT_FILE, "a", buffering=1) as ckpt:
+    for name in tqdm(os.listdir(IMG_DIR), desc="Zero-DCE++ + Adaptive Edge", unit="img"):
+        if not name.lower().endswith(IMG_EXTS):
+            continue
+        if name in processed:
+            continue
+
+        img = cv2.imread(os.path.join(IMG_DIR, name))
+        if img is None:
+            continue
+
+        #Illumination recovery
+        out = zerodce_y_only(img)
+        out = edge_anchor(out)
+        out = poisson_denoise(out)
+        cv2.imwrite(os.path.join(OUT_DIR, name), out)
+        ckpt.write(name + "\n")
+        processed.add(name)
+
+print("Process Completed")
+print("📂 Output:", OUT_DIR)
