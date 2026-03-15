@@ -12,6 +12,7 @@ git clone https://github.com/Li-Chongyi/Zero-DCE_extension.git
 From the downloaded repository, copy the Zero-DCE++ folder into this project.
 
 Your folder structure should look like this:
+```
 project-root
 │
 ├── Image Enhancement Pipeline.ipynb
@@ -22,11 +23,11 @@ project-root
 │   ├── lowlight_train.py
 │   ├── Myloss.py
 │   └── snapshots_Zero_DCE++
-│        └── Epoch99.pth
+│       └── Epoch99.pth
 │
 ├── input
 └── output
-
+```
 3. Update the Paths in the Script
 
 Edit the following variables in Image enhancement pipeline.ipynb:
