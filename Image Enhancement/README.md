@@ -31,9 +31,10 @@ project-root
 3. Update the Paths in the Script
 
 Edit the following variables in Image enhancement pipeline.ipynb:
-
+```python
 IMG_DIR = "./input"
 OUT_DIR = "./output"
 
 ZERO_DCE_MODEL = "./Zero-DCE++/model.py"
 ZERO_DCE_WEIGHTS = "./Zero-DCE++/snapshots_Zero_DCE++/Epoch99.pth"
+```
